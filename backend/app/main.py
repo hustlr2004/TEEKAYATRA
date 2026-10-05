@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
 from datetime import date, datetime
 from time import time
 from typing import Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -28,6 +30,24 @@ from .services.schedule import due_doses, next_visit, overdue_doses, schedule_wi
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Teeka Yatra API", version="0.1.0")
+
+allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://localhost:5173",
+    "https://127.0.0.1:5173",
+]
+configured_origins = os.getenv("ALLOWED_ORIGINS")
+if configured_origins:
+    allowed_origins.extend(origin.strip() for origin in configured_origins.split(",") if origin.strip())
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMIT_MAX_REQUESTS = 120
