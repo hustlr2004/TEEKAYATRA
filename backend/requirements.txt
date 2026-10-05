@@ -1,0 +1,12 @@
+alembic>=1.13,<2
+cryptography>=42,<47
+fastapi>=0.110,<1
+httpx>=0.26,<1
+pyjwt>=2,<3
+pydantic>=2,<3
+pyyaml>=6,<7
+qrcode[pil]>=7,<9
+pytest>=8,<9
+reportlab>=4,<5
+sqlalchemy>=2,<3
+uvicorn[standard]>=0.27,<1

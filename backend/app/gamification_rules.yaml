@@ -1,0 +1,42 @@
+caregiver:
+  dose_recorded:
+    on_time: 10
+    catch_up: 6
+    paper_card_updated: 2
+    verified_referral: 5
+    whole_visit_set_complete: 20
+  levels:
+    - name: Seed
+      completed_milestones: 0
+    - name: Sapling
+      completed_milestones: 1
+    - name: Young Tree
+      completed_milestones: 3
+    - name: Strong Tree
+      completed_milestones: 5
+    - name: Guardian
+      completed_milestones: 8
+  streak_grace_days: 14
+  badges:
+    fully_immunised_by_1:
+      code: FULLY_IMMUNISED_BY_1
+      name: Fully Immunised by 1
+      max_age_days: 365
+      required_milestones_days: [0, 42, 70, 98, 274]
+    booster_hero:
+      code: BOOSTER_HERO
+      name: Booster Hero
+      required_codes: [MR_2, DPT_BOOSTER_1, BOPV_BOOSTER]
+    village_champion:
+      code: VILLAGE_CHAMPION
+      name: Village Champion
+asha:
+  same_day_entry: 5
+  defaulter_traced: 8
+  session_on_time: 6
+manager:
+  data_quality_star:
+    points: 10
+    reason: data_quality_star
+anti_gaming:
+  max_doses_per_asha_per_day: 40

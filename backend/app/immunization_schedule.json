@@ -1,0 +1,103 @@
+[
+  {
+    "id": "birth",
+    "label": "Birth",
+    "start_days": 0,
+    "end_days": 0,
+    "vaccines": [
+      {"code": "BCG", "name": "BCG"},
+      {"code": "BOPV_0", "name": "bOPV-0"},
+      {"code": "HEPB_BIRTH", "name": "HepB birth dose"}
+    ]
+  },
+  {
+    "id": "6_weeks",
+    "label": "6 wk",
+    "start_days": 42,
+    "end_days": 42,
+    "vaccines": [
+      {"code": "BOPV_1", "name": "bOPV-1"},
+      {"code": "PENTA_1", "name": "Pentavalent-1"},
+      {"code": "FIPV_1", "name": "fIPV-1"},
+      {"code": "RVV_1", "name": "RVV-1"},
+      {"code": "PCV_1", "name": "PCV-1"}
+    ]
+  },
+  {
+    "id": "10_weeks",
+    "label": "10 wk",
+    "start_days": 70,
+    "end_days": 70,
+    "vaccines": [
+      {"code": "BOPV_2", "name": "bOPV-2"},
+      {"code": "PENTA_2", "name": "Pentavalent-2"},
+      {"code": "RVV_2", "name": "RVV-2"}
+    ]
+  },
+  {
+    "id": "14_weeks",
+    "label": "14 wk",
+    "start_days": 98,
+    "end_days": 98,
+    "vaccines": [
+      {"code": "BOPV_3", "name": "bOPV-3"},
+      {"code": "PENTA_3", "name": "Pentavalent-3"},
+      {"code": "FIPV_2", "name": "fIPV-2"},
+      {"code": "RVV_3", "name": "RVV-3"},
+      {"code": "PCV_2", "name": "PCV-2"}
+    ]
+  },
+  {
+    "id": "9_11_months",
+    "label": "9-11 mo",
+    "start_days": 274,
+    "end_days": 335,
+    "vaccines": [
+      {"code": "MR_1", "name": "MR-1"},
+      {"code": "JE_1", "name": "JE-1", "endemic_only": true},
+      {"code": "PCV_BOOSTER", "name": "PCV-Booster"},
+      {"code": "FIPV_3", "name": "fIPV-3"},
+      {"code": "VITA_1", "name": "Vitamin A 1st dose"}
+    ]
+  },
+  {
+    "id": "16_23_months",
+    "label": "16-23 mo",
+    "start_days": 487,
+    "end_days": 700,
+    "vaccines": [
+      {"code": "MR_2", "name": "MR-2"},
+      {"code": "JE_2", "name": "JE-2", "endemic_only": true},
+      {"code": "DPT_BOOSTER_1", "name": "DPT Booster-1"},
+      {"code": "BOPV_BOOSTER", "name": "bOPV Booster"},
+      {"code": "VITA_2", "name": "Vitamin A dose 2"}
+    ]
+  },
+  {
+    "id": "5_6_years",
+    "label": "5-6 yr",
+    "start_days": 1826,
+    "end_days": 2191,
+    "vaccines": [
+      {"code": "DPT_BOOSTER_2", "name": "DPT Booster-2"}
+    ]
+  },
+  {
+    "id": "10_years",
+    "label": "10 yr",
+    "start_days": 3652,
+    "end_days": 3652,
+    "vaccines": [
+      {"code": "TD_10", "name": "Td"}
+    ]
+  },
+  {
+    "id": "16_years",
+    "label": "16 yr",
+    "start_days": 5844,
+    "end_days": 5844,
+    "vaccines": [
+      {"code": "TD_16", "name": "Td"}
+    ]
+  }
+]
