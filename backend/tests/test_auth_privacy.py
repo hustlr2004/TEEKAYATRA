@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.models import AuditLog, Child, Consent, Role, Sex, User, Village
-from app.services.auth import create_access_token
+from app.services.auth import create_access_token, hash_password
 from app.services.crypto import decrypt_phone, encrypt_phone
 
 
@@ -171,6 +171,27 @@ def test_delete_my_data_removes_caregiver_children(client: TestClient, db: Sessi
     assert response.status_code == 200
     assert response.json()["deleted_child_ids"] == [1]
     assert db.get(Child, 1) is None
+
+
+def test_login_accepts_phone_and_password(client: TestClient, db: Session) -> None:
+    db.add(
+        User(
+            id=99,
+            role=Role.caregiver,
+            name="Demo Login User",
+            phone=encrypt_phone("+910000000099"),
+            village_id=1,
+            pw_hash=hash_password("demo123"),
+        )
+    )
+    db.commit()
+
+    response = client.post("/auth/login", json={"phone": "+910000000099", "password": "demo123"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["token_type"] == "bearer"
+    assert payload["access_token"]
 
 
 def test_child_reads_and_writes_are_audited(client: TestClient, db: Session) -> None:

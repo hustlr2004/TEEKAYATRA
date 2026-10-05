@@ -17,9 +17,9 @@ from .database import Base, engine, get_db
 from .models import Child, Consent, Dose, Grievance, NotificationLog, Role, Sex, User, VaccineSchedule, Village
 from .services.audit import audit_child_access
 from .services.analytics import manager_dashboard, simulated_external_register_csv
-from .services.auth import create_access_token, current_user, require_role
+from .services.auth import create_access_token, current_user, hash_password, require_role, verify_password
 from .services.cards import vaccination_card_pdf
-from .services.crypto import encrypt_phone, masked_phone
+from .services.crypto import decrypt_phone, encrypt_phone, masked_phone
 from .services.gamification import child_progress as gamified_child_progress
 from .services.gamification import village_leaderboard as gamified_village_leaderboard
 from .services.notifications import process_inbound_message
@@ -54,12 +54,18 @@ RATE_LIMIT_MAX_REQUESTS = 120
 _rate_limit_buckets: Dict[str, List[float]] = {}
 
 
+class LoginRequest(BaseModel):
+    phone: str = Field(min_length=6, max_length=20)
+    password: str = Field(min_length=1, max_length=255)
+
+
 class UserCreate(BaseModel):
     role: Role
     name: str = Field(min_length=1, max_length=100)
     phone: str = Field(min_length=6, max_length=20)
     village_id: Optional[int] = None
-    pw_hash: str = Field(min_length=1, max_length=255)
+    password: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    pw_hash: str = Field(default="", min_length=0, max_length=255)
     preferred_language: str = Field(default="en", max_length=8)
 
 
@@ -143,15 +149,30 @@ def auth_token(user_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
     return {"access_token": create_access_token(user), "token_type": "bearer"}
 
 
+@app.post("/auth/login")
+def auth_login(payload: LoginRequest, db: Session = Depends(get_db)) -> dict[str, str]:
+    user = None
+    for candidate in db.scalars(select(User)).all():
+        if decrypt_phone(candidate.phone) == payload.phone:
+            user = candidate
+            break
+    if user is None or not verify_password(payload.password, user.pw_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid phone or password")
+    return {"access_token": create_access_token(user), "token_type": "bearer"}
+
+
 @app.post("/users", status_code=status.HTTP_201_CREATED)
 def create_user(payload: UserCreate, actor: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, object]:
     require_role(actor, Role.admin)
+    password_hash = payload.pw_hash or (hash_password(payload.password) if payload.password else "")
+    if not password_hash:
+        raise HTTPException(status_code=400, detail="Password is required")
     user = User(
         role=payload.role,
         name=payload.name,
         phone=encrypt_phone(payload.phone),
         village_id=payload.village_id,
-        pw_hash=payload.pw_hash,
+        pw_hash=password_hash,
         preferred_language=payload.preferred_language,
     )
     db.add(user)

@@ -27,6 +27,7 @@ from .models import (
     VaccineSchedule,
     Village,
 )
+from .services.auth import hash_password
 from .services.crypto import encrypt_phone
 
 
@@ -133,11 +134,12 @@ def seed_demo_data(db: Session, reset: bool = False) -> None:
     db.add_all(villages)
     db.flush()
 
+    demo_password = hash_password("demo123")
     ashas = [
-        User(role=Role.asha, name="Sunita Devi", phone=encrypt_phone("+919000000101"), village_id=villages[0].id, pw_hash="demo-hash-asha-1"),
-        User(role=Role.asha, name="Rekha Kumari", phone=encrypt_phone("+919000000102"), village_id=villages[1].id, pw_hash="demo-hash-asha-2"),
+        User(role=Role.asha, name="Sunita Devi", phone=encrypt_phone("+919000000101"), village_id=villages[0].id, pw_hash=demo_password),
+        User(role=Role.asha, name="Rekha Kumari", phone=encrypt_phone("+919000000102"), village_id=villages[1].id, pw_hash=demo_password),
     ]
-    manager = User(role=Role.manager, name="Ravi Kumar", phone=encrypt_phone("+919000000201"), village_id=None, pw_hash="demo-hash-manager")
+    manager = User(role=Role.manager, name="Ravi Kumar", phone=encrypt_phone("+919000000201"), village_id=None, pw_hash=demo_password)
     db.add_all(ashas + [manager])
     db.flush()
 
@@ -148,7 +150,7 @@ def seed_demo_data(db: Session, reset: bool = False) -> None:
             name="Guardian %02d" % (index + 1),
             phone=encrypt_phone("+919100000%03d" % index),
             village_id=villages[index % len(villages)].id,
-            pw_hash="demo-hash-guardian-%02d" % index,
+            pw_hash=demo_password,
             preferred_language=["en", "hi", "pa"][index % 3],
         )
         guardians.append(guardian)

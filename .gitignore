@@ -7,6 +7,9 @@ dist/
 build/
 .env
 .env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.example
 .DS_Store
 *.sqlite3
 *.db
