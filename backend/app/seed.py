@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta
 from typing import Iterable, List
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .database import Base, engine
+from .database import Base, SessionLocal, engine
 from .models import (
     AuditLog,
     Badge,
@@ -229,10 +230,15 @@ def seed_supporting_records(
     db.add(AuditLog(actor_id=None, action="seed", resource_type="database", resource_id="demo", purpose="demo data"))
 
 
+async def async_main() -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with SessionLocal() as db:
+        await db.run_sync(lambda sync_db: seed_demo_data(sync_db, reset=True))
+
+
 def main() -> None:
-    Base.metadata.create_all(bind=engine)
-    with Session(engine) as db:
-        seed_demo_data(db, reset=True)
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":

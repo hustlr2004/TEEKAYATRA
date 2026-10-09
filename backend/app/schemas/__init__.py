@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from .models import DoseSource, EntityType, Role, Sex
+from ..models import DoseSource, EntityType, Role, Sex
 
 
 class VillageRead(BaseModel):

@@ -63,3 +63,12 @@ export async function pullSync(since: string | undefined, role: Role): Promise<u
   const suffix = since ? `?since=${encodeURIComponent(since)}` : '';
   return getJson(`/sync/pull${suffix}`, role);
 }
+
+export async function eventStreamUrl(role: Role, lastEventId?: string): Promise<string> {
+  await authHeaders(role);
+  const params = new URLSearchParams({ token: tokenCache[role] ?? '' });
+  if (lastEventId) {
+    params.set('since', lastEventId);
+  }
+  return `${API_BASE}/events?${params.toString()}`;
+}

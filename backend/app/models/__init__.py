@@ -4,10 +4,10 @@ import enum
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .database import Base
+from ..database import Base
 
 
 class Role(str, enum.Enum):
@@ -41,6 +41,19 @@ class EntityType(str, enum.Enum):
     manager = "manager"
     village = "village"
     team = "team"
+
+
+class JobStatus(str, enum.Enum):
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
+class EventStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    processed = "processed"
+    failed = "failed"
 
 
 class User(Base):
@@ -79,6 +92,9 @@ class Village(Base):
 
 class Child(Base):
     __tablename__ = "children"
+    __table_args__ = (
+        Index("ix_children_village_id_active", "village_id", "deleted_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dob: Mapped[date] = mapped_column(Date, nullable=False, index=True)
@@ -91,6 +107,7 @@ class Child(Base):
     opt_in_app: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     client_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     conflict_flag: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     village: Mapped[Village] = relationship(back_populates="children")
     guardian: Mapped[User] = relationship(back_populates="guardian_children", foreign_keys=[guardian_id])
@@ -174,7 +191,10 @@ class VaccineSchedule(Base):
 
 class Dose(Base):
     __tablename__ = "doses"
-    __table_args__ = (UniqueConstraint("child_id", "vaccine_code", name="uq_doses_child_vaccine"),)
+    __table_args__ = (
+        UniqueConstraint("child_id", "vaccine_code", name="uq_doses_child_vaccine"),
+        Index("ix_doses_child_id_vaccine_code", "child_id", "vaccine_code"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     child_id: Mapped[int] = mapped_column(ForeignKey("children.id"), nullable=False, index=True)
@@ -221,10 +241,11 @@ class StockLog(Base):
 
 class Points(Base):
     __tablename__ = "points"
+    __table_args__ = (Index("ix_points_entity_id", "entity_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     entity_type: Mapped[EntityType] = mapped_column(Enum(EntityType), nullable=False, index=True)
-    entity_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
     points: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[str] = mapped_column(String(140), nullable=False)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -252,3 +273,72 @@ class AuditLog(Base):
     purpose: Mapped[str] = mapped_column(String(140), nullable=False)
     details: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class JobRun(Base):
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DeadLetterLog(Base):
+    __tablename__ = "dead_letter_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ExternalRegisterRow(Base):
+    __tablename__ = "external_register_rows"
+    __table_args__ = (
+        UniqueConstraint("source_name", "block", "vaccine_code", name="uq_external_register_source_block_vaccine"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    block: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    vaccine_code: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    aggregate_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    aggregate_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[EventStatus] = mapped_column(Enum(EventStatus), nullable=False, default=EventStatus.pending, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EventDelivery(Base):
+    __tablename__ = "event_deliveries"
+    __table_args__ = (
+        UniqueConstraint("event_id", "subscriber", name="uq_event_delivery_event_subscriber"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("outbox_events.id"), nullable=False, index=True)
+    subscriber: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    status: Mapped[EventStatus] = mapped_column(Enum(EventStatus), nullable=False, default=EventStatus.pending, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

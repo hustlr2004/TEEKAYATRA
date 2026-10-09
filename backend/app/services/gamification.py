@@ -145,36 +145,41 @@ def child_progress(db: Session, child: Child) -> Progress:
 
 def village_leaderboard(db: Session) -> List[VillageLeaderboardRow]:
     villages = db.scalars(select(Village).order_by(Village.district, Village.block)).all()
+    village_points = dict(
+        db.execute(
+            select(Points.entity_id, func.coalesce(func.sum(Points.points), 0))
+            .where(Points.entity_type == EntityType.village)
+            .group_by(Points.entity_id)
+        ).all()
+    )
+    caregiver_points = dict(
+        db.execute(
+            select(Child.village_id, func.coalesce(func.sum(Points.points), 0))
+            .join(Points, Points.entity_id == Child.guardian_id)
+            .where(Points.entity_type == EntityType.caregiver)
+            .group_by(Child.village_id)
+        ).all()
+    )
+    children_counts = dict(
+        db.execute(select(Child.village_id, func.count(Child.id)).group_by(Child.village_id)).all()
+    )
+    badge_counts = dict(
+        db.execute(
+            select(Badge.entity_id, func.count(Badge.id))
+            .where(Badge.entity_type == EntityType.village)
+            .group_by(Badge.entity_id)
+        ).all()
+    )
     rows: List[VillageLeaderboardRow] = []
     for village in villages:
-        village_points = db.scalar(
-            select(func.coalesce(func.sum(Points.points), 0)).where(
-                Points.entity_type == EntityType.village,
-                Points.entity_id == village.id,
-            )
-        ) or 0
-        caregiver_ids = select(Child.guardian_id).where(Child.village_id == village.id)
-        caregiver_points = db.scalar(
-            select(func.coalesce(func.sum(Points.points), 0)).where(
-                Points.entity_type == EntityType.caregiver,
-                Points.entity_id.in_(caregiver_ids),
-            )
-        ) or 0
-        children_count = db.scalar(select(func.count()).select_from(Child).where(Child.village_id == village.id)) or 0
-        badge_count = db.scalar(
-            select(func.count()).select_from(Badge).where(
-                Badge.entity_type == EntityType.village,
-                Badge.entity_id == village.id,
-            )
-        ) or 0
         rows.append(
             VillageLeaderboardRow(
                 village_id=village.id,
                 block=village.block,
                 district=village.district,
-                points=int(village_points) + int(caregiver_points),
-                children_count=int(children_count),
-                badges=int(badge_count),
+                points=int(village_points.get(village.id, 0)) + int(caregiver_points.get(village.id, 0)),
+                children_count=int(children_counts.get(village.id, 0)),
+                badges=int(badge_counts.get(village.id, 0)),
             )
         )
     return sorted(rows, key=lambda row: (-row.points, row.district, row.block))

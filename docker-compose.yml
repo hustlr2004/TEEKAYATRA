@@ -1,13 +1,61 @@
 services:
-  backend:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: teeka_yatra
+      POSTGRES_USER: teeka
+      POSTGRES_PASSWORD: teeka
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teeka -d teeka_yatra"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+    volumes:
+      - teeka-postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
     build:
       context: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://teeka:teeka@postgres:5432/teeka_yatra
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: change-me-in-production
+      PHONE_ENCRYPTION_KEY: change-me-to-a-32-byte-key
+      ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
     ports:
       - "8000:8000"
-    volumes:
-      - teeka-yatra-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+    command: ["sh", "-c", "alembic upgrade head && arq app.worker.WorkerSettings"]
     environment:
-      DATABASE_URL: sqlite:////app/data/teeka_yatra.db
+      DATABASE_URL: postgresql+asyncpg://teeka:teeka@postgres:5432/teeka_yatra
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: change-me-in-production
+      PHONE_ENCRYPTION_KEY: change-me-to-a-32-byte-key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build:
@@ -17,7 +65,7 @@ services:
     environment:
       VITE_API_BASE: http://localhost:8000
     depends_on:
-      - backend
+      - api
 
 volumes:
-  teeka-yatra-data:
+  teeka-postgres-data:

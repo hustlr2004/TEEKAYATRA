@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import os
-from typing import Generator
+from typing import AsyncGenerator
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import declarative_base
 
+from .core.config import get_settings
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./teeka_yatra.db")
+DATABASE_URL = get_settings().database_url
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+engine = create_async_engine(DATABASE_URL, connect_args=connect_args, future=True)
+SessionLocal = async_sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 Base = declarative_base()
 
 
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with SessionLocal() as db:
         yield db
-    finally:
-        db.close()
