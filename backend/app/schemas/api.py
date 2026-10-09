@@ -13,6 +13,19 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=255)
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=512)
+
+
+class OtpRequest(BaseModel):
+    phone: str = Field(min_length=6, max_length=20)
+
+
+class OtpVerify(BaseModel):
+    phone: str = Field(min_length=6, max_length=20)
+    code: str = Field(min_length=4, max_length=8)
+
+
 class UserCreate(BaseModel):
     role: Role
     name: str = Field(min_length=1, max_length=100)

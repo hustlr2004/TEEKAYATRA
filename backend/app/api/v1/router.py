@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -10,7 +10,8 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from ...core.security import current_user, user_id_from_token
 from ...database import get_db
 from ...models import User
-from ...schemas.api import ChildCreate, ConsentCreate, GrievanceCreate, LoginRequest, SimInbound, SyncPush, UserCreate
+from ...schemas.api import ChildCreate, ConsentCreate, GrievanceCreate, LoginRequest, OtpRequest, OtpVerify, RefreshRequest, SimInbound, SyncPush, UserCreate
+from ...schemas.query import ListQuery
 from ...services.live_events import role_events, sse_lines
 from ..dependencies import AppServiceRunner, get_app_service
 
@@ -32,6 +33,26 @@ async def auth_login(payload: LoginRequest, service: AppServiceRunner = Depends(
     return await service.run(lambda app: app.login(payload))
 
 
+@router.post("/auth/refresh")
+async def auth_refresh(payload: RefreshRequest, service: AppServiceRunner = Depends(get_app_service)) -> dict[str, str]:
+    return await service.run(lambda app: app.refresh(payload))
+
+
+@router.post("/auth/logout")
+async def auth_logout(payload: RefreshRequest, service: AppServiceRunner = Depends(get_app_service)) -> dict[str, object]:
+    return await service.run(lambda app: app.logout(payload))
+
+
+@router.post("/auth/otp/request")
+async def auth_otp_request(payload: OtpRequest, service: AppServiceRunner = Depends(get_app_service)) -> dict[str, object]:
+    return await service.run(lambda app: app.request_otp(payload))
+
+
+@router.post("/auth/otp/verify")
+async def auth_otp_verify(payload: OtpVerify, service: AppServiceRunner = Depends(get_app_service)) -> dict[str, str]:
+    return await service.run(lambda app: app.verify_otp(payload))
+
+
 @router.post("/users", status_code=status.HTTP_201_CREATED)
 async def create_user(
     payload: UserCreate,
@@ -42,18 +63,45 @@ async def create_user(
 
 
 @router.get("/users")
-async def list_users(actor: User = Depends(current_user), service: AppServiceRunner = Depends(get_app_service)) -> List[dict[str, object]]:
-    return await service.run(lambda app: app.list_users(actor))
+async def list_users(
+    page: int = 1,
+    page_size: int = 100,
+    sort: str = "id",
+    order: str = "asc",
+    q: Optional[str] = None,
+    role: Optional[str] = None,
+    actor: User = Depends(current_user),
+    service: AppServiceRunner = Depends(get_app_service),
+) -> List[dict[str, object]]:
+    return await service.run(lambda app: app.list_users(actor, _list_query(page, page_size, sort, order, q=q, role=role)))
 
 
 @router.get("/villages")
-async def list_villages(actor: User = Depends(current_user), service: AppServiceRunner = Depends(get_app_service)) -> List[dict[str, object]]:
-    return await service.run(lambda app: app.list_villages())
+async def list_villages(
+    page: int = 1,
+    page_size: int = 100,
+    sort: str = "district",
+    order: str = "asc",
+    q: Optional[str] = None,
+    block: Optional[str] = None,
+    district: Optional[str] = None,
+    actor: User = Depends(current_user),
+    service: AppServiceRunner = Depends(get_app_service),
+) -> List[dict[str, object]]:
+    return await service.run(lambda app: app.list_villages(_list_query(page, page_size, sort, order, q=q, block=block, district=district)))
 
 
 @router.get("/schedule")
-async def list_schedule(actor: User = Depends(current_user), service: AppServiceRunner = Depends(get_app_service)) -> List[dict[str, object]]:
-    return await service.run(lambda app: app.list_schedule())
+async def list_schedule(
+    page: int = 1,
+    page_size: int = 100,
+    sort: str = "age_due_days",
+    order: str = "asc",
+    q: Optional[str] = None,
+    actor: User = Depends(current_user),
+    service: AppServiceRunner = Depends(get_app_service),
+) -> List[dict[str, object]]:
+    return await service.run(lambda app: app.list_schedule(_list_query(page, page_size, sort, order, q=q)))
 
 
 @router.get("/demo-summary")
@@ -89,8 +137,18 @@ async def create_child(
 
 
 @router.get("/children")
-async def list_children(actor: User = Depends(current_user), service: AppServiceRunner = Depends(get_app_service)) -> List[dict[str, object]]:
-    return await service.run(lambda app: app.list_children(actor))
+async def list_children(
+    page: int = 1,
+    page_size: int = 100,
+    sort: str = "id",
+    order: str = "asc",
+    q: Optional[str] = None,
+    block: Optional[str] = None,
+    district: Optional[str] = None,
+    actor: User = Depends(current_user),
+    service: AppServiceRunner = Depends(get_app_service),
+) -> List[dict[str, object]]:
+    return await service.run(lambda app: app.list_children(actor, _list_query(page, page_size, sort, order, q=q, block=block, district=district)))
 
 
 @router.get("/children/card-template.pdf")
@@ -138,8 +196,17 @@ async def create_grievance(
 
 
 @router.get("/grievances")
-async def list_grievances(actor: User = Depends(current_user), service: AppServiceRunner = Depends(get_app_service)) -> List[dict[str, object]]:
-    return await service.run(lambda app: app.list_grievances(actor))
+async def list_grievances(
+    page: int = 1,
+    page_size: int = 100,
+    sort: str = "id",
+    order: str = "asc",
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    actor: User = Depends(current_user),
+    service: AppServiceRunner = Depends(get_app_service),
+) -> List[dict[str, object]]:
+    return await service.run(lambda app: app.list_grievances(actor, _list_query(page, page_size, sort, order, q=q, status=status)))
 
 
 @router.post("/jobs/data-retention")
@@ -148,13 +215,29 @@ async def data_retention_job(actor: User = Depends(current_user), service: AppSe
 
 
 @router.get("/leaderboard/village")
-async def village_leaderboard(actor: User = Depends(current_user), service: AppServiceRunner = Depends(get_app_service)) -> List[dict[str, object]]:
-    return await service.run(lambda app: app.village_leaderboard(actor))
+async def village_leaderboard(
+    page: int = 1,
+    page_size: int = 100,
+    sort: str = "points",
+    order: str = "desc",
+    actor: User = Depends(current_user),
+    service: AppServiceRunner = Depends(get_app_service),
+) -> List[dict[str, object]]:
+    return await service.run(lambda app: app.village_leaderboard(actor, _list_query(page, page_size, sort, order)))
 
 
 @router.get("/analytics/manager")
-async def manager_analytics(actor: User = Depends(current_user), service: AppServiceRunner = Depends(get_app_service)) -> dict[str, object]:
-    return await service.run(lambda app: app.manager_analytics(actor))
+async def manager_analytics(
+    block: Optional[str] = None,
+    district: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    page: int = 1,
+    page_size: int = 50,
+    actor: User = Depends(current_user),
+    service: AppServiceRunner = Depends(get_app_service),
+) -> dict[str, object]:
+    return await service.run(lambda app: app.manager_analytics(actor, block, district, start_date, end_date, page, page_size))
 
 
 @router.get("/admin/jobs")
@@ -211,19 +294,33 @@ async def sim_inbound_query(phone: str, message: str = "STOP", service: AppServi
 @router.post("/sync/push")
 async def sync_push(
     payload: SyncPush,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
     actor: User = Depends(current_user),
     service: AppServiceRunner = Depends(get_app_service),
 ) -> dict[str, object]:
-    return await service.run(lambda app: app.sync_push(payload, actor))
+    return await service.run(lambda app: app.sync_push(payload, actor, idempotency_key))
 
 
 @router.get("/sync/pull")
 async def sync_pull(
-    since: Optional[datetime] = None,
+    cursor: int = 0,
     actor: User = Depends(current_user),
     service: AppServiceRunner = Depends(get_app_service),
 ) -> dict[str, object]:
-    return await service.run(lambda app: app.sync_pull(since, actor))
+    return await service.run(lambda app: app.sync_pull(cursor, actor))
+
+
+@router.get("/sync/conflicts")
+async def sync_conflicts(
+    page: int = 1,
+    page_size: int = 100,
+    sort: str = "created_at",
+    order: str = "asc",
+    status: Optional[str] = None,
+    actor: User = Depends(current_user),
+    service: AppServiceRunner = Depends(get_app_service),
+) -> List[dict[str, object]]:
+    return await service.run(lambda app: app.conflict_review_queue(actor, _list_query(page, page_size, sort, order, status=status)))
 
 
 async def _event_stream_user(db, request: Request, token: Optional[str]) -> User:
@@ -256,3 +353,17 @@ async def _role_events(db, actor: User, since_id: int) -> List[dict[str, object]
     if hasattr(db, "run_sync"):
         return await db.run_sync(lambda sync_db: role_events(sync_db, actor, since_id))
     return role_events(db, actor, since_id)
+
+
+def _list_query(
+    page: int,
+    page_size: int,
+    sort: str,
+    order: str,
+    q: Optional[str] = None,
+    role: Optional[str] = None,
+    block: Optional[str] = None,
+    district: Optional[str] = None,
+    status: Optional[str] = None,
+) -> ListQuery:
+    return ListQuery(page=page, page_size=page_size, sort=sort, order=order, q=q, role=role, block=block, district=district, status=status)

@@ -15,14 +15,24 @@ def _key() -> bytes:
     return base64.urlsafe_b64encode(digest)
 
 
+def encrypt_text(value: str) -> str:
+    if value.startswith("gAAAAA"):
+        return value
+    return Fernet(_key()).encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_text(ciphertext: str) -> str:
+    if not ciphertext.startswith("gAAAAA"):
+        return ciphertext
+    return Fernet(_key()).decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+
+
 def encrypt_phone(phone: str) -> str:
-    if phone.startswith("gAAAAA"):
-        return phone
-    return Fernet(_key()).encrypt(phone.encode("utf-8")).decode("utf-8")
+    return encrypt_text(phone)
 
 
 def decrypt_phone(ciphertext: str) -> str:
-    return Fernet(_key()).decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+    return decrypt_text(ciphertext)
 
 
 def masked_phone(ciphertext: str) -> str:

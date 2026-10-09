@@ -1,21 +1,29 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import secrets
+import uuid
 from dataclasses import asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import HTTPException, Response, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..core.security import create_access_token, hash_password, require_role, verify_password
-from ..models import Child, Consent, Dose, DoseSource, Grievance, Role, User
+from ..core.config import get_settings
+from ..core.metrics import doses_recorded_total, sync_failures_total
+from ..core.security import create_access_token, create_refresh_token_value, hash_password, hash_token, require_role, verify_password
+from ..models import Child, ConflictReviewItem, Consent, Dose, DoseSource, Grievance, OtpChallenge, RefreshToken, Role, SyncBatch, SyncChangeLog, User
 from ..repositories.main import MainRepository
-from ..schemas.api import ChildCreate, ConsentCreate, GrievanceCreate, LoginRequest, SyncPush, UserCreate
+from ..schemas.api import ChildCreate, ConsentCreate, GrievanceCreate, LoginRequest, OtpRequest, OtpVerify, RefreshRequest, SyncPush, UserCreate
+from ..schemas.query import ListQuery
 from .audit import audit_child_access
-from .analytics import manager_dashboard, simulated_external_register_csv
+from .analytics import AnalyticsFilters, manager_dashboard, simulated_external_register_csv
 from .cache import LEADERBOARD_CACHE_KEY, MANAGER_DASHBOARD_CACHE_KEY, get_json, invalidate_analytics_cache, set_json
 from .cards import vaccination_card_pdf
-from .crypto import decrypt_phone, encrypt_phone, masked_phone
+from .crypto import decrypt_phone, decrypt_text, encrypt_phone, encrypt_text, masked_phone
 from .event_bus import process_outbox, publish_dose_recorded
 from .gamification import child_progress as gamified_child_progress
 from .gamification import village_leaderboard as gamified_village_leaderboard
@@ -33,7 +41,7 @@ class AppService:
         user = self.repo.get_user(user_id)
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
-        return {"access_token": create_access_token(user), "token_type": "bearer"}
+        return self._issue_token_pair(user)
 
     def login(self, payload: LoginRequest) -> dict[str, str]:
         user = None
@@ -41,9 +49,93 @@ class AppService:
             if decrypt_phone(candidate.phone) == payload.phone:
                 user = candidate
                 break
-        if user is None or not verify_password(payload.password, user.pw_hash):
+        if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid phone or password")
-        return {"access_token": create_access_token(user), "token_type": "bearer"}
+        self._ensure_not_locked(user)
+        if not verify_password(payload.password, user.pw_hash):
+            self._record_failed_login(user)
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid phone or password")
+        user.failed_login_count = 0
+        user.locked_until = None
+        self.db.commit()
+        return self._issue_token_pair(user)
+
+    def refresh(self, payload: RefreshRequest) -> dict[str, str]:
+        token_hash = hash_token(payload.refresh_token)
+        token_row = self.db.scalar(
+            select(RefreshToken).where(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.revoked_at.is_(None),
+            )
+        )
+        if token_row is None or token_row.expires_at < datetime.utcnow():
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        user = self.repo.get_user(token_row.user_id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        new_value = create_refresh_token_value()
+        new_hash = hash_token(new_value)
+        token_row.revoked_at = datetime.utcnow()
+        token_row.replaced_by_hash = new_hash
+        self.db.add(
+            RefreshToken(
+                user_id=user.id,
+                token_hash=new_hash,
+                family_id=token_row.family_id,
+                expires_at=datetime.utcnow() + timedelta(days=get_settings().refresh_token_days),
+            )
+        )
+        self.db.commit()
+        return {"access_token": create_access_token(user), "refresh_token": new_value, "token_type": "bearer"}
+
+    def logout(self, payload: RefreshRequest) -> dict[str, object]:
+        token_hash = hash_token(payload.refresh_token)
+        token_row = self.db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+        if token_row is not None and token_row.revoked_at is None:
+            token_row.revoked_at = datetime.utcnow()
+            self.db.commit()
+        return {"revoked": True}
+
+    def request_otp(self, payload: OtpRequest) -> dict[str, object]:
+        user = self._user_by_phone(payload.phone)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        self._ensure_not_locked(user)
+        code = "%06d" % secrets.randbelow(1_000_000)
+        self.db.add(
+            OtpChallenge(
+                user_id=user.id,
+                code_hash=hash_password(code),
+                expires_at=datetime.utcnow() + timedelta(minutes=get_settings().otp_expiry_minutes),
+            )
+        )
+        self.db.commit()
+        return {"otp_sent": True, "demo_code": code}
+
+    def verify_otp(self, payload: OtpVerify) -> dict[str, str]:
+        user = self._user_by_phone(payload.phone)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Invalid OTP")
+        self._ensure_not_locked(user)
+        challenge = self.db.scalar(
+            select(OtpChallenge)
+            .where(OtpChallenge.user_id == user.id, OtpChallenge.consumed_at.is_(None))
+            .order_by(OtpChallenge.created_at.desc(), OtpChallenge.id.desc())
+        )
+        settings = get_settings()
+        if challenge is None or challenge.expires_at < datetime.utcnow() or challenge.attempts >= settings.otp_max_attempts:
+            raise HTTPException(status_code=401, detail="Invalid OTP")
+        challenge.attempts += 1
+        if not verify_password(payload.code, challenge.code_hash):
+            if challenge.attempts >= settings.otp_max_attempts:
+                self._record_failed_login(user)
+            self.db.commit()
+            raise HTTPException(status_code=401, detail="Invalid OTP")
+        challenge.consumed_at = datetime.utcnow()
+        user.failed_login_count = 0
+        user.locked_until = None
+        self.db.commit()
+        return self._issue_token_pair(user)
 
     def create_user(self, payload: UserCreate, actor: User) -> dict[str, object]:
         require_role(actor, Role.admin)
@@ -52,7 +144,7 @@ class AppService:
             raise HTTPException(status_code=400, detail="Password is required")
         user = User(
             role=payload.role,
-            name=payload.name,
+            name=encrypt_text(payload.name) if payload.role == Role.caregiver else payload.name,
             phone=encrypt_phone(payload.phone),
             village_id=payload.village_id,
             pw_hash=password_hash,
@@ -63,14 +155,44 @@ class AppService:
         self.db.refresh(user)
         return user_public(user, include_phone=True)
 
-    def list_users(self, actor: User) -> List[dict[str, object]]:
+    def _issue_token_pair(self, user: User) -> dict[str, str]:
+        refresh_value = create_refresh_token_value()
+        self.db.add(
+            RefreshToken(
+                user_id=user.id,
+                token_hash=hash_token(refresh_value),
+                family_id=uuid.uuid4().hex,
+                expires_at=datetime.utcnow() + timedelta(days=get_settings().refresh_token_days),
+            )
+        )
+        self.db.commit()
+        return {"access_token": create_access_token(user), "refresh_token": refresh_value, "token_type": "bearer"}
+
+    def _ensure_not_locked(self, user: User) -> None:
+        if user.locked_until is not None and user.locked_until > datetime.utcnow():
+            raise HTTPException(status_code=423, detail="Account locked")
+
+    def _record_failed_login(self, user: User) -> None:
+        settings = get_settings()
+        user.failed_login_count += 1
+        if user.failed_login_count >= settings.login_lockout_threshold:
+            user.locked_until = datetime.utcnow() + timedelta(minutes=settings.login_lockout_minutes)
+        self.db.commit()
+
+    def _user_by_phone(self, phone: str) -> Optional[User]:
+        for candidate in self.repo.users():
+            if decrypt_phone(candidate.phone) == phone:
+                return candidate
+        return None
+
+    def list_users(self, actor: User, options: ListQuery | None = None) -> List[dict[str, object]]:
         require_role(actor, Role.admin)
-        return [user_public(user, include_phone=True) for user in self.repo.users()]
+        return [user_public(user, include_phone=True) for user in self.repo.users(options)]
 
-    def list_villages(self) -> List[dict[str, object]]:
-        return [{"id": village.id, "block": village.block, "district": village.district} for village in self.repo.villages()]
+    def list_villages(self, options: ListQuery | None = None) -> List[dict[str, object]]:
+        return [{"id": village.id, "block": village.block, "district": village.district} for village in self.repo.villages(options)]
 
-    def list_schedule(self) -> List[dict[str, object]]:
+    def list_schedule(self, options: ListQuery | None = None) -> List[dict[str, object]]:
         return [
             {
                 "vaccine_code": row.vaccine_code,
@@ -79,7 +201,7 @@ class AppService:
                 "window_days": row.window_days,
                 "endemic_only": row.endemic_only,
             }
-            for row in self.repo.schedule_rows()
+            for row in self.repo.schedule_rows(options)
         ]
 
     def demo_summary(self) -> dict[str, int]:
@@ -125,10 +247,10 @@ class AppService:
         self.db.refresh(child)
         return child_public(child)
 
-    def list_children(self, actor: User) -> List[dict[str, object]]:
+    def list_children(self, actor: User, options: ListQuery | None = None) -> List[dict[str, object]]:
         if actor.role == Role.manager:
-            return self.repo.aggregated_children()
-        children = self.repo.children_for_actor(actor)
+            return self.repo.aggregated_children(options)
+        children = self.repo.children_for_actor(actor, options)
         for child in children:
             audit_child_access(self.db, actor.id, "read", child.id, "list children")
         self.db.commit()
@@ -215,31 +337,46 @@ class AppService:
         self.db.refresh(grievance)
         return grievance_public(grievance)
 
-    def list_grievances(self, actor: User) -> List[dict[str, object]]:
+    def list_grievances(self, actor: User, options: ListQuery | None = None) -> List[dict[str, object]]:
         require_role(actor, Role.admin)
-        return [grievance_public(row) for row in self.repo.grievances()]
+        return [grievance_public(row) for row in self.repo.grievances(options)]
 
     def data_retention_job(self, actor: User) -> dict[str, int]:
         require_role(actor, Role.admin)
         return asdict(run_retention_job(self.db, date.today()))
 
-    def village_leaderboard(self, actor: User) -> List[dict[str, object]]:
+    def village_leaderboard(self, actor: User, options: ListQuery | None = None) -> List[dict[str, object]]:
         if actor.role == Role.caregiver:
             raise HTTPException(status_code=403, detail="Caregivers cannot view leaderboards")
-        cached = get_json(LEADERBOARD_CACHE_KEY)
+        options = options or ListQuery(sort="points", order="desc")
+        cache_key = "%s:%s:%s:%s:%s" % (LEADERBOARD_CACHE_KEY, options.page, options.page_size, options.sort, options.order)
+        cached = get_json(cache_key)
         if isinstance(cached, list):
             return cached
         payload = [asdict(row) for row in gamified_village_leaderboard(self.db)]
-        set_json(LEADERBOARD_CACHE_KEY, payload)
+        payload = sorted(payload, key=lambda item: item.get(options.sort, item.get("points", 0)), reverse=options.descending or options.sort == "points")
+        payload = payload[options.offset : options.offset + options.limit]
+        set_json(cache_key, payload)
         return payload
 
-    def manager_analytics(self, actor: User) -> dict[str, object]:
+    def manager_analytics(
+        self,
+        actor: User,
+        block: Optional[str] = None,
+        district: Optional[str] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, object]:
         require_role(actor, Role.manager, Role.admin)
-        cached = get_json(MANAGER_DASHBOARD_CACHE_KEY)
+        filters = AnalyticsFilters(block=block, district=district, start_date=start_date, end_date=end_date, page=page, page_size=page_size)
+        cache_key = "%s:%s:%s:%s:%s:%s:%s" % (MANAGER_DASHBOARD_CACHE_KEY, block, district, start_date, end_date, page, page_size)
+        cached = get_json(cache_key)
         if isinstance(cached, dict):
             return cached
-        payload = manager_dashboard(self.db, date.today(), simulated_external_register_csv())
-        set_json(MANAGER_DASHBOARD_CACHE_KEY, payload)
+        payload = manager_dashboard(self.db, date.today(), simulated_external_register_csv(), filters)
+        set_json(cache_key, payload)
         return payload
 
     def job_status(self, actor: User) -> dict[str, object]:
@@ -266,14 +403,28 @@ class AppService:
         status_text = "STOP processed" if processed else "No matching opt-out was processed"
         return "<!doctype html><title>Teeka Yatra Sim</title><p>%s.</p><p><a href='/sim'>Back to inbox</a></p>" % _escape_html(status_text)
 
-    def sync_push(self, payload: SyncPush, actor: User) -> dict[str, object]:
+    def sync_push(self, payload: SyncPush, actor: User, idempotency_key: str) -> dict[str, object]:
         if actor.role not in {Role.asha, Role.admin}:
             raise HTTPException(status_code=403, detail="Only ASHAs and admins can push offline sync batches")
+        request_hash = _sync_request_hash(payload)
+        existing_batch = self.repo.sync_batch(actor.id, idempotency_key)
+        if existing_batch is not None:
+            if existing_batch.request_hash != request_hash:
+                raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different payload")
+            return json.loads(existing_batch.response_json)
+
+        results: List[dict[str, object]] = []
         accepted: List[str] = []
         duplicates: List[str] = []
         conflicts: List[dict[str, object]] = []
         for child_update in payload.children:
-            child = self.accessible_child(child_update.id, actor)
+            child_result: dict[str, object] = {"type": "child", "id": child_update.id}
+            try:
+                child = self.accessible_child(child_update.id, actor)
+            except HTTPException as exc:
+                child_result.update({"status": "rejected", "reason": str(exc.detail)})
+                results.append(child_result)
+                continue
             audit_child_access(self.db, actor.id, "write", child.id, "sync child update")
             if child.client_updated_at is None or child_update.client_updated_at >= child.client_updated_at:
                 if child_update.opt_in_sms is not None:
@@ -283,25 +434,47 @@ class AppService:
                 if child_update.opt_in_app is not None:
                     child.opt_in_app = child_update.opt_in_app
                 child.client_updated_at = child_update.client_updated_at
+                self.db.flush()
+                _append_change(self.db, "child", child.id, child.id, child.village_id, "upsert", child_public(child))
+                child_result["status"] = "accepted"
             else:
                 child.conflict_flag = True
-                conflicts.append({"type": "child_out_of_order", "child_id": child.id})
+                conflict = {"type": "child_out_of_order", "child_id": child.id}
+                _queue_conflict(self.db, child, None, None, "child_out_of_order", conflict)
+                conflicts.append(conflict)
+                child_result.update({"status": "conflict", "reason": "server has newer child data"})
+            results.append(child_result)
         for incoming in payload.doses:
-            child = self.accessible_child(incoming.child_id, actor)
+            item: dict[str, object] = {"type": "dose", "client_uuid": incoming.client_uuid, "child_id": incoming.child_id, "vaccine_code": incoming.vaccine_code}
+            try:
+                child = self.accessible_child(incoming.child_id, actor)
+                source = DoseSource(incoming.source)
+            except ValueError:
+                item.update({"status": "rejected", "reason": "invalid source"})
+                results.append(item)
+                continue
+            except HTTPException as exc:
+                item.update({"status": "rejected", "reason": str(exc.detail)})
+                results.append(item)
+                continue
             if self.repo.get_dose_by_uuid(incoming.client_uuid) is not None:
                 duplicates.append(incoming.client_uuid)
+                item["status"] = "duplicate"
+                results.append(item)
                 continue
             existing_dose = self.repo.get_child_vaccine_dose(incoming.child_id, incoming.vaccine_code)
             if existing_dose is not None:
                 existing_dose.conflict_flag = True
-                conflicts.append(
-                    {
-                        "type": "dose_conflict",
-                        "client_uuid": incoming.client_uuid,
-                        "child_id": incoming.child_id,
-                        "vaccine_code": incoming.vaccine_code,
-                    }
-                )
+                conflict = {
+                    "type": "dose_conflict",
+                    "client_uuid": incoming.client_uuid,
+                    "child_id": incoming.child_id,
+                    "vaccine_code": incoming.vaccine_code,
+                }
+                _queue_conflict(self.db, child, incoming.vaccine_code, incoming.client_uuid, "dose_conflict", conflict)
+                conflicts.append(conflict)
+                item.update({"status": "conflict", "reason": "dose already exists for child and vaccine"})
+                results.append(item)
                 continue
             dose = Dose(
                 child_id=incoming.child_id,
@@ -310,7 +483,7 @@ class AppService:
                 batch_no=incoming.batch_no,
                 session_id=incoming.session_id,
                 recorded_by=actor.id,
-                source=DoseSource(incoming.source),
+                source=source,
                 synced_at=datetime.utcnow(),
                 client_uuid=incoming.client_uuid,
                 client_updated_at=incoming.client_updated_at,
@@ -319,7 +492,25 @@ class AppService:
             self.db.flush()
             publish_dose_recorded(self.db, dose, paper_card_updated=incoming.source == "paper")
             audit_child_access(self.db, actor.id, "write", child.id, "sync dose")
+            _append_change(self.db, "dose", dose.id, child.id, child.village_id, "insert", dose_public(dose))
             accepted.append(incoming.client_uuid)
+            item["status"] = "accepted"
+            item["dose_id"] = dose.id
+            results.append(item)
+        response = {
+            "accepted": accepted,
+            "duplicates": duplicates,
+            "conflicts": conflicts,
+            "rejected": [item for item in results if item.get("status") == "rejected"],
+            "results": results,
+        }
+        if accepted:
+            doses_recorded_total.inc(len(accepted))
+        for item in response["rejected"]:
+            sync_failures_total.labels(str(item.get("reason", "rejected"))[:80]).inc()
+        for conflict in conflicts:
+            sync_failures_total.labels(str(conflict.get("type", "conflict"))[:80]).inc()
+        self.db.add(SyncBatch(actor_id=actor.id, idempotency_key=idempotency_key, request_hash=request_hash, response_json=json.dumps(response, default=str)))
         self.db.commit()
         if accepted:
             invalidate_analytics_cache()
@@ -328,23 +519,42 @@ class AppService:
                 self.db.commit()
             except Exception:
                 self.db.commit()
-        return {"accepted": accepted, "duplicates": duplicates, "conflicts": conflicts}
+        return response
 
-    def sync_pull(self, since: Optional[datetime], actor: User) -> dict[str, object]:
+    def sync_pull(self, cursor: int, actor: User) -> dict[str, object]:
         if actor.role == Role.manager:
-            return {"children": self.repo.aggregated_children(), "doses": [], "conflicts": []}
+            return {"children": self.repo.aggregated_children(), "doses": [], "conflicts": [], "changes": [], "next_cursor": cursor}
         children = self.repo.children_for_actor(actor)
-        child_ids = [child.id for child in children]
-        doses = self.repo.doses_for_children(child_ids, since)
+        changes = self.repo.changes_for_actor(actor, cursor)
         for child in children:
             audit_child_access(self.db, actor.id, "read", child.id, "sync pull")
         self.db.commit()
+        next_cursor = max([cursor] + [change.cursor for change in changes])
         return {
             "children": [child_public(child) | {"client_updated_at": child.client_updated_at, "conflict_flag": child.conflict_flag} for child in children],
-            "doses": [dose_public(dose) for dose in doses],
-            "conflicts": conflict_rows(children, doses),
+            "doses": [json.loads(change.payload) for change in changes if change.entity_type == "dose"],
+            "changes": [change_public(change) for change in changes],
+            "conflicts": conflict_rows(children, []),
+            "next_cursor": next_cursor,
             "server_time": datetime.utcnow().isoformat(),
         }
+
+    def conflict_review_queue(self, actor: User, options: ListQuery | None = None) -> List[dict[str, object]]:
+        require_role(actor, Role.asha, Role.admin)
+        return [
+            {
+                "id": item.id,
+                "child_id": item.child_id,
+                "village_id": item.village_id,
+                "vaccine_code": item.vaccine_code,
+                "client_uuid": item.client_uuid,
+                "conflict_type": item.conflict_type,
+                "status": item.status.value,
+                "details": json.loads(item.details),
+                "created_at": item.created_at,
+            }
+            for item in self.repo.conflict_review_queue(actor, options)
+        ]
 
     def accessible_child(self, child_id: int, actor: User) -> Child:
         child = self.repo.get_child(child_id)
@@ -363,7 +573,7 @@ def user_public(user: User, include_phone: bool) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": user.id,
         "role": user.role.value,
-        "name": user.name,
+        "name": decrypt_text(user.name),
         "village_id": user.village_id,
         "preferred_language": user.preferred_language,
     }
@@ -402,6 +612,18 @@ def dose_public(dose: Dose) -> dict[str, object]:
     }
 
 
+def change_public(change: SyncChangeLog) -> dict[str, object]:
+    return {
+        "cursor": change.cursor,
+        "entity_type": change.entity_type,
+        "entity_id": change.entity_id,
+        "child_id": change.child_id,
+        "operation": change.operation,
+        "payload": json.loads(change.payload),
+        "created_at": change.created_at,
+    }
+
+
 def grievance_public(grievance: Grievance) -> dict[str, object]:
     return {
         "id": grievance.id,
@@ -424,6 +646,52 @@ def conflict_rows(children: List[Child], doses: List[Dose]) -> List[dict[str, ob
         if dose.conflict_flag:
             rows.append({"type": "dose", "dose_id": dose.id, "child_id": dose.child_id})
     return rows
+
+
+def _sync_request_hash(payload: SyncPush) -> str:
+    body = payload.model_dump(mode="json")
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _append_change(
+    db: Session,
+    entity_type: str,
+    entity_id: int,
+    child_id: int,
+    village_id: int,
+    operation: str,
+    payload: dict[str, object],
+) -> None:
+    db.add(
+        SyncChangeLog(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            child_id=child_id,
+            village_id=village_id,
+            operation=operation,
+            payload=json.dumps(payload, default=str),
+        )
+    )
+
+
+def _queue_conflict(
+    db: Session,
+    child: Child,
+    vaccine_code: Optional[str],
+    client_uuid: Optional[str],
+    conflict_type: str,
+    details: dict[str, object],
+) -> None:
+    db.add(
+        ConflictReviewItem(
+            child_id=child.id,
+            village_id=child.village_id,
+            vaccine_code=vaccine_code,
+            client_uuid=client_uuid,
+            conflict_type=conflict_type,
+            details=json.dumps(details, default=str),
+        )
+    )
 
 
 def _escape_html(value: str) -> str:

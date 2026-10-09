@@ -1,0 +1,64 @@
+{
+  "title": "Teeka Yatra API Observability",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request latency p95",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(teeka_request_latency_seconds_bucket[5m])) by (le, path, method))",
+          "legendFormat": "{{method}} {{path}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error rate",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(rate(teeka_request_errors_total[5m])) by (path, status_code)",
+          "legendFormat": "{{status_code}} {{path}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Doses per minute",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(teeka_doses_recorded_total[1m])) * 60",
+          "legendFormat": "doses/min"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sync failures",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(teeka_sync_failures_total[5m])) by (reason)",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Job queue length",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 8},
+      "targets": [
+        {
+          "expr": "teeka_job_queue_length",
+          "legendFormat": "running jobs"
+        }
+      ]
+    }
+  ]
+}

@@ -56,6 +56,11 @@ class EventStatus(str, enum.Enum):
     failed = "failed"
 
 
+class ConflictStatus(str, enum.Enum):
+    open = "open"
+    resolved = "resolved"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -66,6 +71,8 @@ class User(Base):
     village_id: Mapped[Optional[int]] = mapped_column(ForeignKey("villages.id"), nullable=True, index=True)
     pw_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     preferred_language: Mapped[str] = mapped_column(String(8), default="en", nullable=False)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     village: Mapped[Optional["Village"]] = relationship(back_populates="users")
     guardian_children: Mapped[list["Child"]] = relationship(
@@ -80,6 +87,9 @@ class User(Base):
 
 class Village(Base):
     __tablename__ = "villages"
+    __table_args__ = (
+        Index("ix_villages_district_block", "district", "block"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     block: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
@@ -166,6 +176,9 @@ class NotificationOptOut(Base):
 
 class Grievance(Base):
     __tablename__ = "grievances"
+    __table_args__ = (
+        Index("ix_grievances_status_created_at", "status", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     guardian_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
@@ -342,3 +355,69 @@ class EventDelivery(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SyncBatch(Base):
+    __tablename__ = "sync_batches"
+    __table_args__ = (UniqueConstraint("actor_id", "idempotency_key", name="uq_sync_batches_actor_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SyncChangeLog(Base):
+    __tablename__ = "sync_change_log"
+
+    cursor: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    child_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    village_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    operation: Mapped[str] = mapped_column(String(40), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ConflictReviewItem(Base):
+    __tablename__ = "conflict_review_items"
+    __table_args__ = (UniqueConstraint("client_uuid", "conflict_type", name="uq_conflict_review_client_type"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    child_id: Mapped[int] = mapped_column(ForeignKey("children.id"), nullable=False, index=True)
+    village_id: Mapped[int] = mapped_column(ForeignKey("villages.id"), nullable=False, index=True)
+    vaccine_code: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
+    client_uuid: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    conflict_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    status: Mapped[ConflictStatus] = mapped_column(Enum(ConflictStatus), nullable=False, default=ConflictStatus.open, index=True)
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_refresh_tokens_token_hash"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    family_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    replaced_by_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OtpChallenge(Base):
+    __tablename__ = "otp_challenges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

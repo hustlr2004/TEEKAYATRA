@@ -78,7 +78,7 @@ def token(db: Session, user_id: int) -> str:
 def record_dose(client: TestClient, db: Session) -> None:
     response = client.post(
         "/sync/push",
-        headers={"Authorization": "Bearer %s" % token(db, 2)},
+        headers={"Authorization": "Bearer %s" % token(db, 2), "Idempotency-Key": "live-dose-key"},
         json={
             "doses": [
                 {

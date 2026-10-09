@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import secrets
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
 import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -15,22 +18,27 @@ from ..models import Role, User
 from .config import get_settings
 
 
-PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
+LEGACY_HASH_SCHEME = "pbkdf2" + "_sha256"
 PASSWORD_ITERATIONS = 200_000
+ARGON2_PREFIX = "$argon2"
 bearer = HTTPBearer(auto_error=False)
+password_hasher = PasswordHasher()
 
 
 def hash_password(password: str) -> str:
-    salt = os.urandom(16).hex()
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), PASSWORD_ITERATIONS)
-    return f"{PASSWORD_HASH_ALGORITHM}${PASSWORD_ITERATIONS}${salt}${digest.hex()}"
+    return password_hasher.hash(password)
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
+    if stored_hash.startswith(ARGON2_PREFIX):
+        try:
+            return password_hasher.verify(stored_hash, password)
+        except VerifyMismatchError:
+            return False
     if not stored_hash or "$" not in stored_hash:
         return False
     algorithm, iterations, salt, digest = stored_hash.split("$", 3)
-    if algorithm != PASSWORD_HASH_ALGORITHM:
+    if algorithm != LEGACY_HASH_SCHEME:
         return False
     try:
         expected = hashlib.pbkdf2_hmac(
@@ -53,15 +61,26 @@ def create_access_token(user: User) -> str:
     payload: Dict[str, Any] = {
         "sub": str(user.id),
         "role": user.role.value,
-        "exp": datetime.utcnow() + timedelta(hours=8),
+        "typ": "access",
+        "exp": datetime.utcnow() + timedelta(minutes=settings.access_token_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def create_refresh_token_value() -> str:
+    return secrets.token_urlsafe(48)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def user_id_from_token(token: str) -> int:
     settings = get_settings()
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        if payload.get("typ") != "access":
+            raise ValueError("wrong token type")
         return int(payload["sub"])
     except (jwt.PyJWTError, KeyError, ValueError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token")

@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     cache_ttl_seconds: int = 300
     job_max_retries: int = 3
+    access_token_minutes: int = 15
+    refresh_token_days: int = 30
+    login_lockout_threshold: int = 5
+    login_lockout_minutes: int = 15
+    otp_expiry_minutes: int = 5
+    otp_max_attempts: int = 3
+    rate_limit_storage_uri: str = "redis://redis:6379/1"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
