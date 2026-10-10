@@ -31,7 +31,32 @@ RATE_LIMIT_MAX_REQUESTS = settings.rate_limit_max_requests
 configure_logging()
 logger = logging.getLogger("teeka.api")
 
-app = FastAPI(title="Teeka Yatra API", version="0.1.0")
+OPENAPI_TAGS = [
+    {"name": "Authentication", "description": "Password, OTP, refresh-token rotation, and logout flows."},
+    {"name": "Admin", "description": "Administrative user, job, grievance, and retention controls."},
+    {"name": "Reference Data", "description": "Villages and the data-driven India vaccine schedule."},
+    {"name": "Consent & Privacy", "description": "Consent capture, withdrawal, grievance, export, and delete-my-data flows."},
+    {"name": "Children", "description": "Child registration and row-level authorized child reads."},
+    {"name": "Schedule", "description": "Due, overdue, catch-up, endemic-only, and next-visit schedule calculations."},
+    {"name": "Gamification", "description": "Non-monetary progress, badges, and aggregated team leaderboards."},
+    {"name": "Vaccination Cards", "description": "Printable bilingual record cards and blank templates."},
+    {"name": "Analytics", "description": "Aggregated programme manager metrics and alerts only."},
+    {"name": "Offline Sync", "description": "Idempotent offline-first push/pull with conflict review."},
+    {"name": "Live Events", "description": "Role-scoped server-sent events with reconnect support."},
+    {"name": "Notifications", "description": "SMS/IVR reminders, opt-out, and feature-phone simulator."},
+    {"name": "Platform", "description": "Health, readiness, metrics, and demo support endpoints."},
+]
+
+app = FastAPI(
+    title="Teeka Yatra API",
+    version="0.1.0",
+    summary="Privacy-preserving immunization ecosystem for India.",
+    description=(
+        "Teeka Yatra supports caregivers, ASHAs, programme managers, and admins with offline-first child immunization workflows. "
+        "The API enforces consent, role-based access, audit logging, encrypted personal fields, idempotent sync, and aggregated-only leaderboards and analytics."
+    ),
+    openapi_tags=OPENAPI_TAGS,
+)
 limiter = Limiter(key_func=get_remote_address, storage_uri=settings.rate_limit_storage_uri, default_limits=["120/minute"])
 app.state.limiter = limiter
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -122,19 +147,40 @@ async def observability_and_security(request: Request, call_next):
     return response
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["Platform"],
+    summary="Liveness probe",
+    description="Returns `ok` when the API process is running. It does not check database or Redis dependencies.",
+    responses={200: {"description": "API process is alive", "content": {"application/json": {"example": {"status": "ok"}}}}},
+)
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/ready")
+@app.get(
+    "/ready",
+    tags=["Platform"],
+    summary="Readiness probe",
+    description="Checks PostgreSQL and Redis connectivity so orchestrators can decide whether the API is ready for traffic.",
+    responses={
+        200: {"description": "All dependencies are ready", "content": {"application/json": {"example": {"status": "ok", "checks": {"db": True, "redis": True}}}}},
+        503: {"description": "One or more dependencies are unavailable", "content": {"application/json": {"example": {"status": "not_ready", "checks": {"db": True, "redis": False}}}}},
+    },
+)
 async def ready() -> JSONResponse:
     checks = {"db": await _check_db(), "redis": _check_redis()}
     ok = all(checks.values())
     return JSONResponse(status_code=200 if ok else 503, content={"status": "ok" if ok else "not_ready", "checks": checks})
 
 
-@app.get("/metrics")
+@app.get(
+    "/metrics",
+    tags=["Platform"],
+    summary="Prometheus metrics",
+    description="Returns Prometheus text exposition for request latency, errors, doses per minute, sync failures, and job queue length.",
+    responses={200: {"description": "Prometheus metrics text"}},
+)
 async def metrics() -> Response:
     await _refresh_job_queue_metric()
     body, media_type = render_metrics()
@@ -142,7 +188,7 @@ async def metrics() -> Response:
 
 
 app.include_router(v1_router, prefix="/api/v1")
-app.include_router(v1_router)
+app.include_router(v1_router, include_in_schema=False)
 
 
 def _error_response(

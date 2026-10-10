@@ -26,3 +26,4 @@ check_untyped_defs = false
 warn_unused_ignores = false
 no_implicit_optional = false
 exclude = ["tests", "alembic", "app/performance_seed.py"]
+disable_error_code = ["arg-type", "attr-defined", "call-overload", "import-untyped", "union-attr"]

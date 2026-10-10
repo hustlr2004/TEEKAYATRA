@@ -64,10 +64,10 @@ def test_openapi_contract_includes_core_paths(client: TestClient) -> None:
 
     assert response.status_code == 200
     paths = response.json()["paths"]
-    for path in ["/health", "/children", "/children/{child_id}/schedule", "/sync/push", "/sync/pull", "/analytics/manager"]:
+    for path in ["/health", "/api/v1/children", "/api/v1/children/{child_id}/schedule", "/api/v1/sync/push", "/api/v1/sync/pull", "/api/v1/analytics/manager"]:
         assert path in paths
-    assert "post" in paths["/sync/push"]
-    assert "get" in paths["/children/{child_id}/schedule"]
+    assert "post" in paths["/api/v1/sync/push"]
+    assert "get" in paths["/api/v1/children/{child_id}/schedule"]
 
 
 def test_health_contract(client: TestClient) -> None:

@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.routing import APIRoute
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 from ...core.security import current_user, user_id_from_token
@@ -16,6 +17,96 @@ from ...services.live_events import role_events, sse_lines
 from ..dependencies import AppServiceRunner, get_app_service
 
 router = APIRouter()
+
+ERROR_RESPONSES = {
+    400: {
+        "description": "Bad request",
+        "content": {"application/json": {"example": {"code": "bad_request", "message": "Guardian consent required before storing child", "details": {}, "request_id": "req_123"}}},
+    },
+    401: {
+        "description": "Missing or invalid bearer token",
+        "content": {"application/json": {"example": {"code": "unauthorized", "message": "Missing bearer token", "details": {}, "request_id": "req_123"}}},
+    },
+    403: {
+        "description": "Authenticated user is not allowed to perform this action",
+        "content": {"application/json": {"example": {"code": "forbidden", "message": "Child not accessible", "details": {}, "request_id": "req_123"}}},
+    },
+    404: {
+        "description": "Resource not found",
+        "content": {"application/json": {"example": {"code": "not_found", "message": "Child not found", "details": {}, "request_id": "req_123"}}},
+    },
+    409: {
+        "description": "Conflict, usually from idempotency-key reuse or sync conflict",
+        "content": {"application/json": {"example": {"code": "conflict", "message": "Idempotency-Key was already used with a different payload", "details": {}, "request_id": "req_123"}}},
+    },
+    422: {
+        "description": "Validation error",
+        "content": {
+            "application/json": {
+                "example": {
+                    "code": "validation_error",
+                    "message": "Request validation failed",
+                    "details": {"errors": [{"loc": ["body", "phone"], "msg": "Field required", "type": "missing"}]},
+                    "request_id": "req_123",
+                }
+            }
+        },
+    },
+    429: {
+        "description": "Rate limit exceeded",
+        "content": {"application/json": {"example": {"code": "rate_limit_exceeded", "message": "Rate limit exceeded", "details": {}, "request_id": "req_123"}}},
+    },
+}
+
+
+ROUTE_DOCS = {
+    "health": {
+        "tags": ["Platform"],
+        "summary": "API liveness check",
+        "description": "Returns a fast liveness signal. This route does not check PostgreSQL or Redis.",
+        "responses": {200: {"description": "API process is alive", "content": {"application/json": {"example": {"status": "ok"}}}}},
+    },
+    "auth_token": {
+        "tags": ["Authentication"],
+        "summary": "Issue demo tokens for a seeded user",
+        "description": "Development helper for demos and tests. Use `/auth/login` or OTP in production flows.",
+        "responses": {200: {"description": "Bearer and refresh token pair", "content": {"application/json": {"example": {"access_token": "jwt", "refresh_token": "opaque", "token_type": "bearer"}}}}},
+    },
+    "auth_login": {"tags": ["Authentication"], "summary": "Login with phone and password", "description": "Authenticates a user and starts a refresh-token family with rotation."},
+    "auth_refresh": {"tags": ["Authentication"], "summary": "Rotate a refresh token", "description": "Revokes the presented refresh token and returns a fresh access/refresh pair."},
+    "auth_logout": {"tags": ["Authentication"], "summary": "Revoke a refresh token", "description": "Marks the refresh token as revoked so it cannot be reused."},
+    "auth_otp_request": {"tags": ["Authentication"], "summary": "Request a mock OTP", "description": "Creates an expiring OTP challenge with attempt limits. The demo response includes the code."},
+    "auth_otp_verify": {"tags": ["Authentication"], "summary": "Verify OTP and login", "description": "Consumes a valid OTP challenge and returns an access/refresh token pair."},
+    "create_user": {"tags": ["Admin"], "summary": "Create a user", "description": "Admin-only user creation. Phone numbers are encrypted at rest and masked in responses."},
+    "list_users": {"tags": ["Admin"], "summary": "List users", "description": "Admin-only paginated user listing with optional role and text filters."},
+    "list_villages": {"tags": ["Reference Data"], "summary": "List villages", "description": "Returns village reference data with block and district filters."},
+    "list_schedule": {"tags": ["Reference Data"], "summary": "List vaccine schedule", "description": "Returns the India immunization schedule stored as data, including endemic-only flags and grace windows."},
+    "demo_summary": {"tags": ["Platform"], "summary": "Demo data summary", "description": "Counts core records so demo operators can confirm seed data loaded."},
+    "capture_consent": {"tags": ["Consent & Privacy"], "summary": "Capture guardian consent", "description": "Stores consent for a named purpose before child data capture or reminders."},
+    "withdraw_consent": {"tags": ["Consent & Privacy"], "summary": "Withdraw consent", "description": "Marks an existing consent as withdrawn without deleting the audit history."},
+    "create_child": {"tags": ["Children"], "summary": "Register a child", "description": "Creates a child record only after active guardian consent. Caregivers can register only their own children."},
+    "list_children": {"tags": ["Children"], "summary": "List accessible children", "description": "Caregivers see own children, ASHAs see assigned village children, and managers receive aggregated rows only."},
+    "blank_card_template_pdf": {"tags": ["Vaccination Cards"], "summary": "Download a blank card PDF", "description": "Returns a bilingual printable A5 vaccination card template."},
+    "get_child": {"tags": ["Children"], "summary": "Get a child record", "description": "Returns one child when row-level authorization allows it. Reads are audited."},
+    "child_schedule": {"tags": ["Schedule"], "summary": "Get a child's schedule", "description": "Computes due, overdue, catch-up, and next-visit details from the VaccineSchedule table."},
+    "child_progress": {"tags": ["Gamification"], "summary": "Get child progress", "description": "Returns points, level, streak, badges, and milestone progress for the Suraksha Tree."},
+    "child_card_pdf": {"tags": ["Vaccination Cards"], "summary": "Download a child's card PDF", "description": "Returns a filled printable record card with QR code containing only the child ID."},
+    "delete_my_data": {"tags": ["Consent & Privacy"], "summary": "Delete my caregiver data", "description": "Caregiver self-service deletion flow for child records owned by the caregiver."},
+    "export_my_data": {"tags": ["Consent & Privacy"], "summary": "Export my caregiver data", "description": "Caregiver self-service export of minimized personal and child records."},
+    "create_grievance": {"tags": ["Consent & Privacy"], "summary": "File a grievance", "description": "Creates a grievance for consent, access, reminder, or data-rights concerns."},
+    "list_grievances": {"tags": ["Admin"], "summary": "List grievances", "description": "Admin-only grievance queue with pagination and status filter."},
+    "data_retention_job": {"tags": ["Admin"], "summary": "Run data-retention cleanup", "description": "Admin-only manual trigger for the retention cleanup job."},
+    "village_leaderboard": {"tags": ["Gamification"], "summary": "Village leaderboard", "description": "Aggregated team/village leaderboard only. Payloads never include child names or phone numbers."},
+    "manager_analytics": {"tags": ["Analytics"], "summary": "Manager dashboard analytics", "description": "Aggregated coverage, dropout, timeliness, risk, anomaly, and triangulation metrics with filters."},
+    "admin_jobs": {"tags": ["Admin"], "summary": "Background job status", "description": "Admin-only status for background jobs, retries, and dead-letter records."},
+    "events": {"tags": ["Live Events"], "summary": "Role-scoped server-sent events", "description": "Authenticated SSE stream for live caregiver tree growth and manager dashboard updates. Supports `Last-Event-ID` reconnects."},
+    "feature_phone_sim": {"tags": ["Notifications"], "summary": "Feature-phone inbox simulator", "description": "Demo page that displays SMS/IVR reminder logs as a feature-phone inbox."},
+    "sim_inbound": {"tags": ["Notifications"], "summary": "Process inbound SMS", "description": "Processes mock inbound SMS such as STOP for opt-out."},
+    "sim_inbound_query": {"tags": ["Notifications"], "summary": "Process inbound SMS from the demo page", "description": "HTML-friendly mock inbound SMS handler for the feature-phone simulator."},
+    "sync_push": {"tags": ["Offline Sync"], "summary": "Push offline changes", "description": "Accepts a batch with an `Idempotency-Key`, returns per-item results, unions doses, and queues conflicts for ASHA review."},
+    "sync_pull": {"tags": ["Offline Sync"], "summary": "Pull server changes", "description": "Returns accessible children and monotonic change-log entries after the supplied cursor."},
+    "sync_conflicts": {"tags": ["Offline Sync"], "summary": "List sync conflicts", "description": "ASHA/admin conflict review queue for duplicate doses and out-of-order child updates."},
+}
 
 
 @router.get("/health")
@@ -321,6 +412,22 @@ async def sync_conflicts(
     service: AppServiceRunner = Depends(get_app_service),
 ) -> List[dict[str, object]]:
     return await service.run(lambda app: app.conflict_review_queue(actor, _list_query(page, page_size, sort, order, status=status)))
+
+
+def _apply_route_docs() -> None:
+    for route in router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        metadata = ROUTE_DOCS.get(route.endpoint.__name__)
+        if metadata is None:
+            continue
+        route.tags = metadata.get("tags", route.tags)
+        route.summary = metadata.get("summary", route.summary)
+        route.description = metadata.get("description", route.description)
+        route.responses = {**ERROR_RESPONSES, **metadata.get("responses", {})}
+
+
+_apply_route_docs()
 
 
 async def _event_stream_user(db, request: Request, token: Optional[str]) -> User:

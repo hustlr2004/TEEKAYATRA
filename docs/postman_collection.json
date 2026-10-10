@@ -1,0 +1,69 @@
+{
+  "info": {
+    "name": "Teeka Yatra API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Core demo flow for Teeka Yatra. Set baseUrl to http://localhost:8000 and token after login or /auth/token."
+  },
+  "variable": [
+    {"key": "baseUrl", "value": "http://localhost:8000"},
+    {"key": "token", "value": ""},
+    {"key": "childId", "value": "1"}
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {"method": "GET", "url": "{{baseUrl}}/health"}
+    },
+    {
+      "name": "Demo token",
+      "request": {"method": "POST", "url": "{{baseUrl}}/api/v1/auth/token?user_id=1"}
+    },
+    {
+      "name": "List schedule",
+      "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{token}}"}], "url": "{{baseUrl}}/api/v1/schedule"}
+    },
+    {
+      "name": "Capture consent",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Authorization", "value": "Bearer {{token}}"}, {"key": "Content-Type", "value": "application/json"}],
+        "url": "{{baseUrl}}/api/v1/consents",
+        "body": {"mode": "raw", "raw": "{\"guardian_id\":1,\"purpose\":\"store_child\"}"}
+      }
+    },
+    {
+      "name": "Create child",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Authorization", "value": "Bearer {{token}}"}, {"key": "Content-Type", "value": "application/json"}],
+        "url": "{{baseUrl}}/api/v1/children",
+        "body": {"mode": "raw", "raw": "{\"dob\":\"2026-01-01\",\"sex\":\"female\",\"village_id\":1,\"guardian_id\":1,\"asha_id\":2,\"opt_in_sms\":true,\"opt_in_ivr\":false,\"opt_in_app\":true}"}
+      }
+    },
+    {
+      "name": "Push offline dose",
+      "request": {
+        "method": "POST",
+        "header": [
+          {"key": "Authorization", "value": "Bearer {{token}}"},
+          {"key": "Idempotency-Key", "value": "demo-sync-001"},
+          {"key": "Content-Type", "value": "application/json"}
+        ],
+        "url": "{{baseUrl}}/api/v1/sync/push",
+        "body": {"mode": "raw", "raw": "{\"doses\":[{\"client_uuid\":\"postman-dose-001\",\"child_id\":{{childId}},\"vaccine_code\":\"BCG\",\"given_on\":\"2026-01-01\",\"source\":\"app\",\"client_updated_at\":\"2026-01-03T10:00:00\"}]}"}
+      }
+    },
+    {
+      "name": "Child schedule",
+      "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{token}}"}], "url": "{{baseUrl}}/api/v1/children/{{childId}}/schedule"}
+    },
+    {
+      "name": "Manager analytics",
+      "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{token}}"}], "url": "{{baseUrl}}/api/v1/analytics/manager"}
+    },
+    {
+      "name": "Village leaderboard",
+      "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{token}}"}], "url": "{{baseUrl}}/api/v1/leaderboard/village"}
+    }
+  ]
+}
